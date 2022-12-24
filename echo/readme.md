@@ -5,3 +5,4 @@
 -- Hệ điều hành  : Windows 11
 -- Trình duyệt   : Cốc Cốc
 -- Công cụ hỗ trợ: Laragon, HeidiSQL, VS Code, Python
+- video: https://www.youtube.com/watch?v=JNtmhVdQudY

