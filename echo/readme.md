@@ -6,3 +6,4 @@
 -- Trình duyệt   : Cốc Cốc
 -- Công cụ hỗ trợ: Laragon, HeidiSQL, VS Code, Python
 - video: https://www.youtube.com/watch?v=JNtmhVdQudY
+- Writeup: https://www.facebook.com/groups/hackanddevbros/posts/1217068805597103
